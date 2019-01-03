@@ -13,65 +13,71 @@
 
 module periph_soc #(UBAUD_DEFAULT=54)
   (
- output wire        uart_tx,
- output wire        uart_irq,
- input wire         uart_rx,
+ output wire 	    uart_tx,
+ output wire 	    uart_irq,
+ input wire 	    uart_rx,
  // clock and reset
- input wire         clk_200MHz,
- input wire         pxl_clk,
- input wire         msoc_clk,
- input wire         rstn,
+ input wire 	    clk_200MHz,
+ input wire 	    pxl_clk,
+ input wire 	    msoc_clk,
+ input wire 	    clk_io_uart,
+ input wire 	    rstn,
  output reg [21:0]  to_led,
  input wire [15:0]  from_dip,
- output wire        sd_sclk,
- input wire         sd_detect,
+ output wire 	    sd_sclk,
+ input wire 	    sd_detect,
  inout wire [3:0]   sd_dat,
- inout wire         sd_cmd,
- output reg         sd_reset,
- output reg         sd_irq,
- input wire         hid_en,
+ inout wire 	    sd_cmd,
+ output reg 	    sd_reset,
+ output reg 	    sd_irq,
+ input wire 	    hid_en,
  input wire [7:0]   hid_we,
  input wire [17:0]  hid_addr,
  input wire [63:0]  hid_wrdata,
  output reg [63:0]  hid_rddata,
  //keyboard
- inout wire         PS2_CLK,
- inout wire         PS2_DATA,
- 
+ inout wire 	    PS2_CLK,
+ inout wire 	    PS2_DATA,
+ // USB
+ inout wire 	    usb_dp,      // PMOD pin 1 JD1=H4
+ inout wire 	    usb_dn,      // PMOD pin 2 JD2=H1
+ output reg 	    usb_pullup,  // PMOD pin 3 JD3=G1
+ input wire 	    usb_sense,   // PMOD pin 4 JD4=G3
+
    // display
- output wire        VGA_HS_O,
- output wire        VGA_VS_O,
+ output wire 	    VGA_HS_O,
+ output wire 	    VGA_VS_O,
  output wire [3:0]  VGA_RED_O,
  output wire [3:0]  VGA_BLUE_O,
  output wire [3:0]  VGA_GREEN_O,
 // SMSC ethernet PHY to framing_top connections
- input wire         clk_rmii,
- input wire         locked,
- output wire        eth_rstn,
- input wire         eth_crsdv,
- output wire        eth_refclk,
+ input wire 	    clk_rmii,
+ input wire 	    locked,
+ output wire 	    eth_rstn,
+ input wire 	    eth_crsdv,
+ output wire 	    eth_refclk,
  output wire [1:0]  eth_txd,
- output wire        eth_txen,
+ output wire 	    eth_txen,
  input wire [1:0]   eth_rxd,
- input wire         eth_rxerr,
- output wire        eth_mdc,
- input wire         phy_mdio_i,
- output wire        phy_mdio_o,
- output wire        phy_mdio_t,
- output wire        eth_irq,
- output wire        ram_clk,
- output wire        ram_rst,
- output wire        ram_en,
+ input wire 	    eth_rxerr,
+ output wire 	    eth_mdc,
+ input wire 	    phy_mdio_i,
+ output wire 	    phy_mdio_o,
+ output wire 	    phy_mdio_t,
+ output wire 	    eth_irq,
+ output wire 	    ram_clk,
+ output wire 	    ram_rst,
+ output wire 	    ram_en,
  output wire [7:0]  ram_we,
  output wire [15:0] ram_addr,
  output wire [63:0] ram_wrdata,
- input  wire [63:0] ram_rddata
+ input wire [63:0]  ram_rddata
  );
- 
+
  wire [19:0] dummy;
  wire        scan_ready, scan_released;
  wire [7:0]  scan_code, fstore_data;
- wire        keyb_empty, tx_error_no_keyboard_ack;   
+ wire        keyb_empty, tx_error_no_keyboard_ack;
  reg [31:0]  keycode;
  reg scan_ready_dly;
  wire [8:0] keyb_fifo_out;
@@ -91,12 +97,12 @@ logic [63:0] one_hot_rdata[7:0];
       .rx_scan_code(scan_code),
       .rx_scan_read(scan_ready),
       .tx_error_no_keyboard_ack(tx_error_no_keyboard_ack));
- 
+
  always @(negedge msoc_clk)
     begin
         scan_ready_dly <= scan_ready;
     end
-    
+
  my_fifo #(.width(9)) keyb_fifo (
        .clk(~msoc_clk),      // input wire read clk
        .rst(~rstn),      // input wire rst
@@ -111,7 +117,7 @@ logic [63:0] one_hot_rdata[7:0];
      );
 
     wire [7:0] red,  green, blue;
- 
+
     fstore2 the_fstore(
       .pixel2_clk(pxl_clk),
       .vsyn(VGA_VS_O),
@@ -132,7 +138,160 @@ logic [63:0] one_hot_rdata[7:0];
  assign VGA_GREEN_O = green[7:4];
  assign VGA_BLUE_O = blue[7:4];
 
-   reg         u_trans, u_recv, uart_rx_full, uart_rx_empty, uart_tx_empty, uart_tx_full;   
+   // mdhayter add
+   reg [15:0]  ticker;
+   wire [11:0] us_tx_wrcount, us_tx_rdcount;
+   wire [11:0] us_rx_wrcount, us_rx_rdcount;
+   wire        us_rx_full, us_tx_full;
+   wire        us_rx_empty, us_tx_empty;
+   reg 	       us_rx_read, us_tx_read;
+   reg 	       us_rx_write, us_tx_write;
+   wire  [8:0] us_rx_fifo_data_out, us_tx_fifo_data_out;
+   reg 	       us_rx_err;
+   reg [7:0]   us_tx_byte;
+   wire [7:0]  us_rx_fifo_data_in;
+   wire [31:0] usb_status;
+
+   always @(posedge clk_io_uart)
+     if (~rstn)
+       begin
+	  ticker = 0;
+       end
+     else
+       begin
+	  ticker = ticker + 1;
+       end
+
+   // [5] --> 0x40028000 base address
+   // [14] [13]
+   //   0    0 0x40028000 ticker beef
+   //   0    1 0x4002a000 ticker beef
+   //   1    0 0x4002c000 flags and data out
+   //   1    1 0x4002e000 fifo counts
+
+   assign one_hot_rdata[5] = hid_addr[14] ?
+                              (hid_addr[13] ?
+                               {4'b0,us_tx_wrcount,
+                                4'b0,us_tx_rdcount,
+                                4'b0,us_rx_wrcount,
+                                4'b0,us_rx_rdcount} :
+                               {usb_status,
+				3'b0,usb_sense,us_rx_full,us_tx_full,
+				     us_rx_empty,us_rx_fifo_data_out}) :
+                              {ticker, 16'hbeef};
+   my_2clk_fifo #(.width(9)) us_rx_fifo (
+       .rclk(msoc_clk),      // input wire read clk
+       .wclk(clk_io_uart),      // write clock at 48MHz
+       .rst(~rstn),      // input wire rst
+       .din({us_rx_err, us_rx_fifo_data_in}),      // input wire [8 : 0] din
+       .wr_en(us_rx_write),  // input wire wr_en
+       .rd_en(us_rx_read),  // input wire rd_en
+       .dout(us_rx_fifo_data_out),    // output wire [8 : 0] dout
+       .rdcount(us_rx_rdcount),         // 12-bit output: Read count
+       .wrcount(us_rx_wrcount),         // 12-bit output: Write count
+       .full(us_rx_full),    // output wire full
+       .empty(us_rx_empty)  // output wire empty
+				    );
+
+   my_2clk_fifo #(.width(9)) us_tx_fifo (
+       .rclk(clk_io_uart),      // read clk at 48MHz
+       .wclk(msoc_clk),      // input wire read clk
+       .rst(~rstn),      // input wire rst
+       .din({1'b0,us_tx_byte}),      // input wire [8 : 0] din
+       .wr_en(us_tx_write),  // input wire wr_en
+       .rd_en(us_tx_read),  // input wire rd_en
+       .dout(us_tx_fifo_data_out),    // output wire [8 : 0] dout
+       .rdcount(us_tx_rdcount),         // 12-bit output: Read count
+       .wrcount(us_tx_wrcount),         // 12-bit output: Write count
+       .full(us_tx_full),    // output wire full
+       .empty(us_tx_empty)  // output wire empty
+				    );
+
+   always @(posedge msoc_clk)
+     if (~rstn)
+       begin
+	  us_rx_read = 0;
+	  us_tx_write = 0;
+       end
+     else
+       begin
+	  us_rx_read = 0;
+	  us_tx_write = 0;
+
+	  // [5] --> 0x40028000 base address
+	  // [14] [13] [12]
+	  //   0    X    X nothing
+	  //   1    0    0 0x4002c000 write to tx
+	  //   1    0    1 0x4002d000 write to pop rx
+	  //   1    1    0 0x4002e000 write usb pullup
+	  //   1    1    X nothing
+	  if (hid_en & (|hid_we) & one_hot_data_addr[5] & hid_addr[14])
+            casez (hid_addr[13:12])
+              2'b00: begin
+		 us_tx_write = 1;
+		 us_tx_byte = hid_wrdata[7:0];
+	      end
+              2'b01: begin us_rx_read = 1; end
+              2'b10: begin usb_pullup = hid_wrdata[0]; end
+              2'b11: begin end
+            endcase
+       end // else: !if(~rstn)
+
+`ifdef US_LOOPBACK
+   assign us_rx_fifo_data_in = {us_tx_fifo_data_out[7:2],
+     us_tx_fifo_data_out[0],
+     us_tx_fifo_data_out[1]};
+
+   always @(posedge clk_io_uart)
+     if (~rstn)
+       begin
+	  us_tx_read <= 0;
+	  us_rx_write <= 0;
+	  us_rx_err <= 0;
+       end
+     else
+       begin
+	  // could do better here but this is simple
+	  us_tx_read <= ~us_tx_read & ~us_tx_empty;
+	  us_rx_write <= us_tx_read & ~us_rx_full;
+	  us_rx_err <= (us_tx_read & us_rx_full) | (us_rx_err & ~us_rx_write);
+       end // else: !if(~rstn)
+`else // !`ifdef US_LOOPBACK
+   wire usb_p_tx, usb_n_tx;
+   wire usb_p_rx, usb_n_rx;
+   wire usb_tx_en;
+   wire usb_led;
+
+   usb_uart usb_uart_impl(
+  .clk_48mhz(clk_io_uart),
+  .rstn(rstn & usb_pullup),
+  .usb_p_tx(usb_p_tx),
+  .usb_n_tx(usb_n_tx),
+  .usb_p_rx(usb_p_rx),
+  .usb_n_rx(usb_n_rx),
+  .usb_tx_en(usb_tx_en),
+  .led(usb_led),
+  .tx_empty(us_tx_empty),
+  .rx_full(us_rx_full),
+  .tx_read(us_tx_read),
+  .rx_write(us_rx_write),
+  .rx_err(us_rx_err),
+  .rx_fifo_wdata(us_rx_fifo_data_in),
+  .tx_fifo_rdata(us_tx_fifo_data_out),
+  .usb_status(usb_status)
+  );
+  // Plan is this infers the IOBUF
+  assign usb_dp = usb_tx_en ? usb_p_tx : 1'bz;
+  assign usb_dn = usb_tx_en ? usb_n_tx : 1'bz;
+  assign usb_p_rx = usb_tx_en ? 1'b1 : usb_dp;
+  assign usb_n_rx = usb_tx_en ? 1'b0 : usb_dn;
+  assign to_led[0] = usb_led & usb_pullup;
+
+`endif
+
+
+
+   reg         u_trans, u_recv, uart_rx_full, uart_rx_empty, uart_tx_empty, uart_tx_full;
    reg [15:0]  u_baud;
    wire        received, recv_err, is_recv, is_trans, uart_maj;
    wire [11:0] uart_rx_wrcount, uart_rx_rdcount, uart_tx_wrcount, uart_tx_rdcount;
@@ -146,14 +305,14 @@ logic [63:0] one_hot_rdata[7:0];
                                {4'b0,uart_tx_wrcount,
                                 4'b0,uart_tx_rdcount,
                                 4'b0,uart_rx_wrcount,
-                                4'b0,uart_rx_rdcount} : 
+                                4'b0,uart_rx_rdcount} :
                                {4'b0,uart_rx_full,uart_tx_full,uart_rx_empty,uart_rx_fifo_data_out}) :
                               {tx_error_no_keyboard_ack,keyb_empty,keyb_fifo_out[8:0]};
 
 typedef enum {UTX_IDLE, UTX_EMPTY, UTX_INUSE, UTX_POP, UTX_START} utx_t;
 
    utx_t utxstate_d, utxstate_q;
-   
+
 always @(posedge msoc_clk)
     if (~rstn)
     begin
@@ -196,11 +355,11 @@ always @*
        default:;
      endcase
   end
-   
+
 //----------------------------------------------------------------------------//
 rx_delay uart_rx_dly(
 .clk(msoc_clk),
-.in(uart_rx),		     
+.in(uart_rx),
 .maj(uart_maj));
 // Core Instantiation
 uart i_uart(
@@ -244,7 +403,7 @@ uart i_uart(
        .full(uart_tx_full),    // output wire full
        .empty(uart_tx_empty)  // output wire empty
      );
-   
+
 //----------------------------------------------------------------------------//
 
 always_comb
@@ -262,14 +421,14 @@ always_comb
    wire       sd_data_busy, data_crc_ok, sd_dat_oe;
    wire [3:0] sd_dat_to_mem, sd_dat_to_host, sd_dat_to_host_maj;
    wire       sd_cmd_to_mem, sd_cmd_to_host, sd_cmd_to_host_maj, sd_cmd_oe;
-   wire       sd_clk_o;       
+   wire       sd_clk_o;
    wire       sd_cmd_finish, sd_data_finish, sd_cmd_crc_ok, sd_cmd_index_ok;
 
    reg [2:0]  sd_data_start_reg;
    reg [1:0]  sd_align_reg;
    reg [15:0] sd_blkcnt_reg;
    reg [11:0] sd_blksize_reg;
-   
+
    reg [15:0] clock_divider_sd_clk_reg;
    reg [2:0]  sd_cmd_setting_reg;
    reg [5:0]  sd_cmd_i_reg;
@@ -282,7 +441,7 @@ always_comb
    reg [1:0]  sd_align;
    reg [15:0] sd_blkcnt;
    reg [11:0] sd_blksize;
-   
+
    reg [15:0] clock_divider_sd_clk;
    reg [2:0]  sd_cmd_setting;
    reg [5:0]  sd_cmd_i;
@@ -293,7 +452,7 @@ always_comb
    reg [15:0] from_dip_reg;
 
    wire [9:0] sd_xfr_addr;
-   
+
 logic [6:0] sd_clk_daddr;
 logic       sd_clk_dclk, sd_clk_den, sd_clk_drdy, sd_clk_dwe, sd_clk_locked;
 logic [15:0] sd_clk_din, sd_clk_dout;
@@ -305,7 +464,7 @@ logic [3:0] sd_irq_en_reg, sd_irq_stat_reg;
    logic [47:0] 	sd_cmd_packet, sd_cmd_packet_reg;
    logic [15:0] 	sd_transf_cnt, sd_transf_cnt_reg;
    logic            sd_detect_reg;
-   
+
 assign sd_clk_dclk = msoc_clk;
 
 always @(posedge msoc_clk or negedge rstn)
@@ -332,7 +491,7 @@ always @(posedge msoc_clk or negedge rstn)
         sd_irq_stat_reg <= 0;
         sd_irq_en_reg <= 0;
         sd_irq <= 0;
-	to_led <= 0;
+	to_led[21:1] <= 0;
    end
    else
      begin
@@ -352,9 +511,9 @@ always @(posedge msoc_clk or negedge rstn)
 	    8: sd_blksize_reg <= hid_wrdata;
 	    9: sd_cmd_timeout_reg <= hid_wrdata;
 	   10: {sd_clk_dwe,sd_clk_den,sd_clk_daddr} <= hid_wrdata;
-       11: sd_irq_en_reg <= hid_wrdata;            
+       11: sd_irq_en_reg <= hid_wrdata;
 	   // Not strictly related, but can indicate SD-card activity and so on
-	   15: to_led <= hid_wrdata;
+	   15: to_led[21:1] <= hid_wrdata[21:1];
 	   default:;
 	  endcase
     end
@@ -375,7 +534,7 @@ always @(posedge sd_clk_o)
    wire [31:0] data_in_rx;
    //Rx SD data
    wire [31:0] data_out_tx;
-   
+
    // tri-state gate
    io_buffer_fast IOBUF_cmd_inst (
        .outg(sd_cmd_to_host),     // Buffer output
@@ -386,7 +545,7 @@ always @(posedge sd_clk_o)
 
     rx_delay cmd_rx_dly(
         .clk(clk_200MHz),
-        .in(sd_cmd_to_host),             
+        .in(sd_cmd_to_host),
         .maj(sd_cmd_to_host_maj));
 
    io_buffer_fast IOBUF_clk_inst (
@@ -407,12 +566,12 @@ always @(posedge sd_clk_o)
         );
         rx_delay dat_rx_dly(
             .clk(clk_200MHz),
-            .in(sd_dat_to_host[sd_dat_ix]),             
+            .in(sd_dat_to_host[sd_dat_ix]),
             .maj(sd_dat_to_host_maj[sd_dat_ix]));
         end
-        
+
    endgenerate
-   
+
    logic [7:0] rx_wr = rx_wr_en ? (sd_xfr_addr[0] ? 8'hF0 : 8'hF) : 8'b0;
    logic [63:0] douta, doutb;
    logic sd_xfr_addr_prev;
@@ -420,12 +579,12 @@ always @(posedge sd_clk_o)
    assign one_hot_rdata[3] = doutb;
    assign data_out_tx = sd_xfr_addr_prev ? {douta[39:32],douta[47:40],douta[55:48],douta[63:56]} :
                                            {douta[7:0],douta[15:8],douta[23:16],douta[31:24]};
-  
+
    always @(negedge sd_clk_o)
        begin
        if (tx_rd) sd_xfr_addr_prev = sd_xfr_addr[0];
-       end            
- 
+       end
+
    dualmem_32K_64 RAMB16_S36_S36_inst_sd
        (
         .clka   ( ~sd_clk_o                   ),     // Port A Clock
@@ -451,7 +610,7 @@ always @(posedge sd_clk_o)
      sd_cmd_packet_reg <= sd_cmd_packet;
      sd_transf_cnt_reg <= sd_transf_cnt;
      sd_detect_reg <= sd_detect;
-        
+
      case(hid_addr[7:3])
        0: sd_cmd_resp_sel = sd_cmd_response_reg[38:7];
        1: sd_cmd_resp_sel = sd_cmd_response_reg[70:39];
@@ -460,7 +619,7 @@ always @(posedge sd_clk_o)
        4: sd_cmd_resp_sel = sd_cmd_wait_reg;
        5: sd_cmd_resp_sel = sd_status_reg;
        6: sd_cmd_resp_sel = sd_cmd_packet_reg[31:0];
-       7: sd_cmd_resp_sel = sd_cmd_packet_reg[47:32];       
+       7: sd_cmd_resp_sel = sd_cmd_packet_reg[47:32];
        8: sd_cmd_resp_sel = sd_data_wait_reg;
        9: sd_cmd_resp_sel = sd_transf_cnt_reg;
       10: sd_cmd_resp_sel = 0;
@@ -486,13 +645,13 @@ always @(posedge sd_clk_o)
       default: sd_cmd_resp_sel = 32'HDEADBEEF;
      endcase // case (hid_addr[7:3])
      end
-   
+
    assign sd_status[3:0] = 4'b0;
 
    assign one_hot_rdata[2] = sd_cmd_resp_sel;
 
 `ifdef FPGA_FULL
- 
+
 clk_wiz_1 sd_clk_div
      (
      // Clock in ports
@@ -514,9 +673,9 @@ clk_wiz_1 sd_clk_div
 `else // !`ifdef FPGA
 
    assign sd_clk_o = msoc_clk;
-   
+
 `endif
-   
+
 sd_top sdtop(
     .sd_clk     (sd_clk_o),
     .cmd_rst    (~(sd_cmd_rst&rstn)),
@@ -551,7 +710,7 @@ sd_top sdtop(
     .crc_actual_o(sd_cmd_response[6:0]),
     .sd_rd_o(tx_rd),
     .sd_we_o(rx_wr_en),
-    .sd_data_o(data_in_rx),    
+    .sd_data_o(data_in_rx),
     .sd_dat_to_mem(sd_dat_to_mem),
     .sd_cmd_to_mem(sd_cmd_to_mem),
     .sd_dat_oe(sd_dat_oe),
@@ -593,6 +752,6 @@ framing_top open
    assign ram_en = hid_en&(one_hot_data_addr[1]|one_hot_data_addr[0]);
    assign ram_clk = msoc_clk;
    assign ram_rst = ~rstn;
-   
+
 endmodule // chip_top
 `default_nettype wire
