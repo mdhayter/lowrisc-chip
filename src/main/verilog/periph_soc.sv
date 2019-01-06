@@ -8,72 +8,92 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 // See LICENSE for license details.
+`include "consts.vh"
+`include "config.vh"
 
 `default_nettype none
 
 module periph_soc #(UBAUD_DEFAULT=54)
   (
- output wire 	    uart_tx,
- output wire 	    uart_irq,
- input wire 	    uart_rx,
+ output wire 		      uart_tx,
+ output wire 		      uart_irq,
+ input wire 		      uart_rx,
  // clock and reset
- input wire 	    clk_200MHz,
- input wire 	    pxl_clk,
- input wire 	    msoc_clk,
- input wire 	    clk_io_uart,
- input wire 	    rstn,
- output reg [21:0]  to_led,
- input wire [15:0]  from_dip,
- output wire 	    sd_sclk,
- input wire 	    sd_detect,
- inout wire [3:0]   sd_dat,
- inout wire 	    sd_cmd,
- output reg 	    sd_reset,
- output reg 	    sd_irq,
- input wire 	    hid_en,
- input wire [7:0]   hid_we,
- input wire [17:0]  hid_addr,
- input wire [63:0]  hid_wrdata,
- output reg [63:0]  hid_rddata,
- //keyboard
- inout wire 	    PS2_CLK,
- inout wire 	    PS2_DATA,
- // USB
- inout wire 	    usb_dp,      // PMOD pin 1 JD1=H4
- inout wire 	    usb_dn,      // PMOD pin 2 JD2=H1
- output reg 	    usb_pullup,  // PMOD pin 3 JD3=G1
- input wire 	    usb_sense,   // PMOD pin 4 JD4=G3
+ input wire 		      clk_200MHz,
+ input wire 		      pxl_clk,
+ input wire 		      msoc_clk,
+ input wire 		      clk_io_uart,
+ input wire 		      rstn,
+ output reg [`MAX_LED:`MIN_LED] to_led,
+ input wire [`MAX_DIP:0]       from_dip,
+`ifdef SDCARD
+ output wire 		      sd_sclk,
+ input wire 		      sd_detect,
+ inout wire [3:0] 	      sd_dat,
+ inout wire 		      sd_cmd,
+ output reg 		      sd_reset,
+ output reg 		      sd_irq,
+`endif // SDCARD
+ input wire 		      hid_en,
+ input wire [7:0] 	      hid_we,
+ input wire [17:0] 	      hid_addr,
+ input wire [63:0] 	      hid_wrdata,
+ output reg [63:0] 	      hid_rddata,
 
+`ifdef PS2
+ //keyboard
+ inout wire 		      PS2_CLK,
+ inout wire 		      PS2_DATA,
+`endif // PS2
+
+`ifdef USB
+ // USB
+ inout wire 		      usb_dp, // PMOD pin 1 JD1=H4
+ inout wire 		      usb_dn, // PMOD pin 2 JD2=H1
+ output reg 		      usb_pullup, // PMOD pin 3 JD3=G1
+ input wire 		      usb_sense, // PMOD pin 4 JD4=G3
+`endif // USB
+   
+`ifdef VGA
    // display
- output wire 	    VGA_HS_O,
- output wire 	    VGA_VS_O,
- output wire [3:0]  VGA_RED_O,
- output wire [3:0]  VGA_BLUE_O,
- output wire [3:0]  VGA_GREEN_O,
-// SMSC ethernet PHY to framing_top connections
- input wire 	    clk_rmii,
- input wire 	    locked,
- output wire 	    eth_rstn,
- input wire 	    eth_crsdv,
- output wire 	    eth_refclk,
- output wire [1:0]  eth_txd,
- output wire 	    eth_txen,
- input wire [1:0]   eth_rxd,
- input wire 	    eth_rxerr,
- output wire 	    eth_mdc,
- input wire 	    phy_mdio_i,
- output wire 	    phy_mdio_o,
- output wire 	    phy_mdio_t,
- output wire 	    eth_irq,
- output wire 	    ram_clk,
- output wire 	    ram_rst,
- output wire 	    ram_en,
- output wire [7:0]  ram_we,
- output wire [15:0] ram_addr,
- output wire [63:0] ram_wrdata,
- input wire [63:0]  ram_rddata
+ output wire 		      VGA_HS_O,
+ output wire 		      VGA_VS_O,
+ output wire [3:0] 	      VGA_RED_O,
+ output wire [3:0] 	      VGA_BLUE_O,
+ output wire [3:0] 	      VGA_GREEN_O,
+`endif // VGA
+`ifdef ETHERNET
+ // SMSC ethernet PHY to framing_top connections
+ input wire 		      clk_rmii,
+ input wire 		      locked,
+ output wire 		      eth_rstn,
+ input wire 		      eth_crsdv,
+ output wire 		      eth_refclk,
+ output wire [1:0] 	      eth_txd,
+ output wire 		      eth_txen,
+ input wire [1:0] 	      eth_rxd,
+ input wire 		      eth_rxerr,
+ output wire 		      eth_mdc,
+ input wire 		      phy_mdio_i,
+ output wire 		      phy_mdio_o,
+ output wire 		      phy_mdio_t,
+ output wire 		      eth_irq,
+`endif // ETHERNET
+
+ output wire 		      ram_clk,
+ output wire 		      ram_rst,
+ output wire 		      ram_en,
+ output wire [7:0] 	      ram_we,
+ output wire [15:0] 	      ram_addr,
+ output wire [63:0] 	      ram_wrdata,
+ input wire [63:0] 	      ram_rddata
  );
 
+ // signals from/to core
+logic [7:0] one_hot_data_addr;
+logic [63:0] one_hot_rdata[7:0];
+
+`ifdef PS2   
  wire [19:0] dummy;
  wire        scan_ready, scan_released;
  wire [7:0]  scan_code, fstore_data;
@@ -81,9 +101,6 @@ module periph_soc #(UBAUD_DEFAULT=54)
  reg [31:0]  keycode;
  reg scan_ready_dly;
  wire [8:0] keyb_fifo_out;
- // signals from/to core
-logic [7:0] one_hot_data_addr;
-logic [63:0] one_hot_rdata[7:0];
 
     ps2 keyb_mouse(
       .clk(msoc_clk),
@@ -115,7 +132,9 @@ logic [63:0] one_hot_rdata[7:0];
        .full(),    // output wire full
        .empty(keyb_empty)  // output wire empty
      );
-
+`endif // PS2
+   
+`ifdef VGA
     wire [7:0] red,  green, blue;
 
     fstore2 the_fstore(
@@ -137,7 +156,9 @@ logic [63:0] one_hot_rdata[7:0];
  assign VGA_RED_O = red[7:4];
  assign VGA_GREEN_O = green[7:4];
  assign VGA_BLUE_O = blue[7:4];
-
+`endif // VGA
+   
+`ifdef USB
    // mdhayter add
    reg [15:0]  ticker;
    wire [11:0] us_tx_wrcount, us_tx_rdcount;
@@ -237,26 +258,6 @@ logic [63:0] one_hot_rdata[7:0];
             endcase
        end // else: !if(~rstn)
 
-`ifdef US_LOOPBACK
-   assign us_rx_fifo_data_in = {us_tx_fifo_data_out[7:2],
-     us_tx_fifo_data_out[0],
-     us_tx_fifo_data_out[1]};
-
-   always @(posedge clk_io_uart)
-     if (~rstn)
-       begin
-	  us_tx_read <= 0;
-	  us_rx_write <= 0;
-	  us_rx_err <= 0;
-       end
-     else
-       begin
-	  // could do better here but this is simple
-	  us_tx_read <= ~us_tx_read & ~us_tx_empty;
-	  us_rx_write <= us_tx_read & ~us_rx_full;
-	  us_rx_err <= (us_tx_read & us_rx_full) | (us_rx_err & ~us_rx_write);
-       end // else: !if(~rstn)
-`else // !`ifdef US_LOOPBACK
    wire usb_p_tx, usb_n_tx;
    wire usb_p_rx, usb_n_rx;
    wire usb_tx_en;
@@ -285,12 +286,11 @@ logic [63:0] one_hot_rdata[7:0];
   assign usb_dn = usb_tx_en ? usb_n_tx : 1'bz;
   assign usb_p_rx = usb_tx_en ? 1'b1 : usb_dp;
   assign usb_n_rx = usb_tx_en ? 1'b0 : usb_dn;
-  assign to_led[0] = usb_led & usb_pullup;
+  assign to_led[LED_MIN] = usb_led & usb_pullup;
 
-`endif
+`endif //  `ifdef USB
 
-
-
+`ifdef UART
    reg         u_trans, u_recv, uart_rx_full, uart_rx_empty, uart_tx_empty, uart_tx_full;
    reg [15:0]  u_baud;
    wire        received, recv_err, is_recv, is_trans, uart_maj;
@@ -307,7 +307,13 @@ logic [63:0] one_hot_rdata[7:0];
                                 4'b0,uart_rx_wrcount,
                                 4'b0,uart_rx_rdcount} :
                                {4'b0,uart_rx_full,uart_tx_full,uart_rx_empty,uart_rx_fifo_data_out}) :
-                              {tx_error_no_keyboard_ack,keyb_empty,keyb_fifo_out[8:0]};
+ `ifdef PS2
+                              {tx_error_no_keyboard_ack,keyb_empty,
+			       keyb_fifo_out[8:0]};
+ `else
+                              {1'b0, 1'b1, 9'hFF};
+ `endif // PS2
+   
 
 typedef enum {UTX_IDLE, UTX_EMPTY, UTX_INUSE, UTX_POP, UTX_START} utx_t;
 
@@ -403,6 +409,7 @@ uart i_uart(
        .full(uart_tx_full),    // output wire full
        .empty(uart_tx_empty)  // output wire empty
      );
+`endif //  `ifdef UART
 
 //----------------------------------------------------------------------------//
 
@@ -417,6 +424,9 @@ always_comb
        end
   end
 
+  reg [15:0] from_dip_reg;
+
+`ifdef SDCARD
    wire    tx_rd, rx_wr_en;
    wire       sd_data_busy, data_crc_ok, sd_dat_oe;
    wire [3:0] sd_dat_to_mem, sd_dat_to_host, sd_dat_to_host_maj;
@@ -449,7 +459,6 @@ always_comb
    reg [31:0] sd_cmd_timeout;
 
    reg 	   sd_cmd_start, sd_cmd_rst, sd_data_rst, sd_clk_rst;
-   reg [15:0] from_dip_reg;
 
    wire [9:0] sd_xfr_addr;
 
@@ -491,7 +500,7 @@ always @(posedge msoc_clk or negedge rstn)
         sd_irq_stat_reg <= 0;
         sd_irq_en_reg <= 0;
         sd_irq <= 0;
-	to_led[21:1] <= 0;
+	to_led[`MAX_LED:`MIN_LED+1] <= 0;
    end
    else
      begin
@@ -513,7 +522,7 @@ always @(posedge msoc_clk or negedge rstn)
 	   10: {sd_clk_dwe,sd_clk_den,sd_clk_daddr} <= hid_wrdata;
        11: sd_irq_en_reg <= hid_wrdata;
 	   // Not strictly related, but can indicate SD-card activity and so on
-	   15: to_led[21:1] <= hid_wrdata[21:1];
+	   15: to_led[`MAX_LED:`MIN_LED+1] <= hid_wrdata[`MAX_LED:`MIN_LED+1];
 	   default:;
 	  endcase
     end
@@ -717,7 +726,37 @@ sd_top sdtop(
     .sd_cmd_oe(sd_cmd_oe),
     .sd_xfr_addr(sd_xfr_addr)
     );
-
+`else // !`ifdef SDCARD
+   // Needed because LED and switches (dip) are jammed in here
+   logic [31:0] 	sd_cmd_resp_sel;
+always @(posedge msoc_clk or negedge rstn)
+  if (!rstn)
+    begin
+       from_dip_reg <= 0;
+       to_led[`MAX_LED:`MIN_LED+1] <= 0;
+   end
+   else
+     begin
+        from_dip_reg <= from_dip;
+	 if (hid_en&(|hid_we)&one_hot_data_addr[2]&~hid_addr[14])
+	  case(hid_addr[6:3])
+	   15: to_led[`MAX_LED:`MIN_LED+1] <= hid_wrdata[`MAX_LED:`MIN_LED+1];
+	   default:;
+	  endcase
+     end
+   always @(posedge msoc_clk)
+     begin
+     case(hid_addr[7:3])
+      // not really related but we can decide if we want to autoboot, and so on.
+      31: sd_cmd_resp_sel = from_dip_reg;
+      default: sd_cmd_resp_sel = 32'HDEADBEEF;
+     endcase // case (hid_addr[7:3])
+     end
+   assign one_hot_rdata[2] = sd_cmd_resp_sel;
+   
+`endif //  `ifdef SDCARD
+   
+`ifdef ETHERNET
 framing_top open
   (
    .rstn(locked),
@@ -743,7 +782,8 @@ framing_top open
    .o_edutrstn(eth_rstn),
    .eth_irq(eth_irq)
 );
-
+`endif //  `ifdef ETHERNET
+   
    assign one_hot_rdata[1] = one_hot_rdata[0];
    assign one_hot_rdata[0] = ram_rddata;
    assign ram_wrdata = hid_wrdata;

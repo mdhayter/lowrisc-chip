@@ -53,6 +53,26 @@
    `define NEXYS4_COMMON
   `endif
 
+  `ifdef NEXYS4_COMMON
+   `define ETHERNET
+   `define PS2
+   `define VGA
+   `define SDCARD
+   `define UART
+   `define UART_CTSRTS
+   `define BUTTON_C
+   `define USBFS
+   `define MAX_LED 21
+   `define MIN_LED 0
+   `define MAX_DIP 15
+  `endif
+
+  `ifdef ARTYS7
+   `define UART
+   `define MAX_LED 5
+   `define MIN_LED 2
+   `define MAX_DIP 3
+  `endif
   //`define ADD_MINION_SD
 
  `endif //  `ifdef FPGA

@@ -50,6 +50,23 @@ module chip_top
    output        ddr_cke,
    output [1:0]  ddr_dm,
    output        ddr_odt,
+ `elsif ARTYS7
+   // DDR3 RAM
+   inout wire [15:0]  ddr_dq,
+   inout wire [1:0]   ddr_dqs_n,
+   inout wire [1:0]   ddr_dqs_p,
+   output [13:0] ddr_addr,
+   output [2:0]  ddr_ba,
+   output        ddr_ras_n,
+   output        ddr_cas_n,
+   output        ddr_we_n,
+   output        ddr_reset_n,
+   output        ddr_ck_n,
+   output        ddr_ck_p,
+   output        ddr_cke,
+   output        ddr_cs_n,
+   output [1:0]  ddr_dm,
+   output        ddr_odt,
  `elsif NEXYS4
    // DDR2 RAM
    inout wire [15:0]  ddr_dq,
@@ -125,47 +142,62 @@ module chip_top
 `endif
 
 `ifdef ADD_HID
-   // Simple UART interface
+  `ifdef UART
+  // Simple UART interface
    input wire         rxd,
    output wire       txd,
+   `ifdef UART_CTSRTS
    output wire       rts,
    input wire         cts,
-
+   `endif
+  `endif // UART
+  
+  `ifdef SDCARD 
    // 4-bit full SD interface
    inout wire         sd_sclk,
    input wire         sd_detect,
    inout wire [3:0]   sd_dat,
    inout wire         sd_cmd,
    output wire        sd_reset,
+  `endif // SDCARD
 
    // LED and DIP switch
-   output wire [21:0] o_led,
-   input wire  [15:0] i_dip,
+   output wire [`MAX_LED:`MIN_LED] o_led,
+   input wire  [`MAX_DIP:0] i_dip,
 
    // push button array
+  `ifdef BUTTON_C
    input wire         GPIO_SW_C,
+  `endif // BUTTON_C
    input wire         GPIO_SW_W,
    input wire         GPIO_SW_E,
    input wire         GPIO_SW_N,
    input wire         GPIO_SW_S,
 
+  `ifdef PS2
    //keyboard
    inout wire         PS2_CLK,
    inout wire         PS2_DATA,
+  `endif //PS2
 
+  `ifdef USBFS
    // USB
    inout wire usb_dp,
    inout wire usb_dn,
    output wire usb_pullup,
    input wire usb_sense,
+  `endif // USBFS
 
+  `ifdef VGA   
   // display
    output wire       VGA_HS_O,
    output wire       VGA_VS_O,
    output wire [3:0]  VGA_RED_O,
    output wire [3:0]  VGA_BLUE_O,
    output wire [3:0]  VGA_GREEN_O,
-
+  `endif // VGA
+   
+ `ifdef ETHERNET
  //! Ethernet MAC PHY interface signals
  input wire [1:0]   i_erxd, // RMII receive data
  input wire         i_erx_dv, // PHY data valid
@@ -177,6 +209,7 @@ module chip_top
  output wire        o_emdc, // MDIO clock
  inout wire         io_emdio, // MDIO inout
  output wire        o_erstn, // PHY reset active low
+ `endif // ETHERNET
 `endif //  `ifdef ADD_HID
    // clock and reset
    input wire         clk_p,
@@ -189,6 +222,14 @@ module chip_top
    // internal clock and reset signals
    logic  clk, rst, rstn;
    assign rst = !rstn;
+
+   // Loopback if no flow control pins
+`ifdef UART
+ `ifndef UARTCTSRTS
+   wire   cts, rts;
+   assign cts = rts;
+ `endif // UARTCTSRTS
+`endif // UART
 
    // Debug controlled reset of the Rocket system
    logic  sys_rst;
@@ -208,7 +249,7 @@ module chip_top
    mem_nasti();
 wire io_emdio_i, phy_emdio_o, phy_emdio_t, clk_rmii, clk_rmii_quad, clk_locked, clk_locked_wiz;
 reg phy_emdio_i, io_emdio_o, io_emdio_t;
-logic mig_sys_clk, clk_pixel;
+logic mig_sys_clk, mig_ref_clk, clk200MHz, clk_pixel;
 
    // the NASTI bus for off-FPGA DRAM, converted to High frequency
    nasti_channel
@@ -377,7 +418,7 @@ logic mig_sys_clk, clk_pixel;
    clk_wiz_0 clk_gen
      (
       .clk_in1       ( clk_p         ), // 100 MHz onboard
-      .clk_out1      ( mig_sys_clk   ), // 200 MHz
+      .clk_out1      ( clk200MHz   ), // 200 MHz
       .clk_io_uart   ( clk_io_uart   ), // was 60 MHz hope it changes to 48
       .clk_rmii      ( clk_rmii      ), // 50 MHz rmii
       .clk_rmii_quad ( clk_rmii_quad ), // 50 MHz rmii quad
@@ -385,6 +426,29 @@ logic mig_sys_clk, clk_pixel;
       .resetn        ( rst_top       ),
       .locked        ( clk_locked_wiz )
       );
+   assign mig_sys_clk = clk200MHz;
+   assign clk_locked = clk_locked_wiz & rst_top;
+   assign sys_rst = ~rstn;
+
+ `endif //  `ifdef NEXYS4_COMMON
+
+ `ifdef ARTYS7
+   //clock generator
+   logic clk_io_uart; // UART IO clock for debug
+
+   clk_wiz_0 clk_gen
+     (
+      .clk_in1       ( clk_p         ), // 100 MHz onboard
+      .clk_out1      ( clk200MHz   ), // 200 MHz
+      .clk_io_uart   ( clk_io_uart   ), // 48 MHz for USB
+      .clk_rmii      ( clk      ), // 50 MHz cpu (was rmii)
+      .clk_rmii_quad (  ), // 50 MHz rmii quad
+      .clk_pixel     (  ), // 120 MHz
+      .resetn        ( rst_top       ),
+      .locked        ( clk_locked_wiz )
+      );
+   assign mig_sys_clk = clk_p;
+   assign mig_ref_clk = clk200MHz;
    assign clk_locked = clk_locked_wiz & rst_top;
    assign sys_rst = ~rstn;
 
@@ -417,6 +481,24 @@ logic mig_sys_clk, clk_pixel;
       .sys_clk_i            ( mig_sys_clk            ),
       .sys_rst              ( clk_locked             ),
       .ui_addn_clk_0        ( clk                    ),
+      .ddr3_addr            ( ddr_addr               ),
+      .ddr3_ba              ( ddr_ba                 ),
+      .ddr3_cas_n           ( ddr_cas_n              ),
+      .ddr3_ck_n            ( ddr_ck_n               ),
+      .ddr3_ck_p            ( ddr_ck_p               ),
+      .ddr3_cke             ( ddr_cke                ),
+      .ddr3_ras_n           ( ddr_ras_n              ),
+      .ddr3_reset_n         ( ddr_reset_n            ),
+      .ddr3_we_n            ( ddr_we_n               ),
+      .ddr3_dq              ( ddr_dq                 ),
+      .ddr3_dqs_n           ( ddr_dqs_n              ),
+      .ddr3_dqs_p           ( ddr_dqs_p              ),
+      .ddr3_dm              ( ddr_dm                 ),
+      .ddr3_odt             ( ddr_odt                ),
+ `elsif ARTYS7
+      .sys_clk_i            ( mig_sys_clk            ),
+      .clk_ref_i            ( mig_ref_clk            ),
+      .sys_rst              ( clk_locked             ),
       .ddr3_addr            ( ddr_addr               ),
       .ddr3_ba              ( ddr_ba                 ),
       .ddr3_cas_n           ( ddr_cas_n              ),
@@ -715,10 +797,13 @@ logic mig_sys_clk, clk_pixel;
    wire [17:0]                 hid_addr;
    wire [63:0]                 hid_wrdata,  hid_rddata;
    logic [30:0]                hid_ar_addr, hid_aw_addr;
+
+`ifdef ETHERNET
    logic [1:0] eth_txd;
    logic eth_rstn, eth_refclk, eth_txen;
    assign o_erstn = eth_rstn & clk_locked_wiz;
-
+`endif // ETHERNET
+   
    axi_bram_ctrl_dummy BramCtl
      (
       .s_axi_aclk      ( clk                        ),
@@ -767,6 +852,7 @@ logic mig_sys_clk, clk_pixel;
       .bram_rddata_a   ( hid_rddata                )
       );
 
+`ifdef ETHERNET
    always @(posedge clk_rmii)
      begin
         phy_emdio_i <= io_emdio_i;
@@ -807,26 +893,30 @@ logic mig_sys_clk, clk_pixel;
         o_etxd = eth_txd;
         o_etx_en = eth_txen;
         end
-
+`endif // ETHERNET
+   
    periph_soc #(.UBAUD_DEFAULT(`UBAUD_DEFAULT)) psoc
      (
       .msoc_clk   ( clk             ),
+ `ifdef SDCARD
       .sd_sclk    ( sd_sclk         ),
       .sd_detect  ( sd_detect       ),
       .sd_dat     ( sd_dat          ),
       .sd_cmd     ( sd_cmd          ),
       .sd_irq     ( sd_irq          ),
+`endif // SDCARD
       .from_dip   ( i_dip           ),
       .to_led     ( o_led           ),
       .rstn       ( clk_locked      ),
-      .clk_200MHz ( mig_sys_clk     ),
+      .clk_200MHz ( clk200MHz     ),
       .pxl_clk    ( clk_pixel       ),
       .clk_io_uart ( clk_io_uart    ),
       .uart_rx    ( rxd             ),
       .uart_tx    ( txd             ),
-      .clk_rmii   ( clk_rmii        ),
-      .locked     ( clk_locked      ),
+`ifdef ETHERNET
     // SMSC ethernet PHY connections
+      .locked     ( clk_locked      ),
+      .clk_rmii   ( clk_rmii        ),
       .eth_rstn   ( eth_rstn        ),
       .eth_crsdv  ( i_erx_dv        ),
       .eth_refclk ( eth_refclk      ),
@@ -839,6 +929,7 @@ logic mig_sys_clk, clk_pixel;
       .phy_mdio_o ( phy_emdio_o     ),
       .phy_mdio_t ( phy_emdio_t     ),
       .eth_irq    ( eth_irq         ),
+`endif // ETHERNET
       .*
       );
 
